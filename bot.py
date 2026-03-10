@@ -1,4 +1,3 @@
-import asyncio
 import html
 import logging
 import os
@@ -12,12 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from telegram import (
-    ChatPermissions,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-)
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.ext import (
     Application,
@@ -40,15 +34,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PROTECTED_CHAT_ID = int(os.getenv("PROTECTED_CHAT_ID", "0") or 0)
 OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
 DB_PATH = os.getenv("DB_PATH", "bot.db")
+
 DEFAULT_ID_THRESHOLD = int(os.getenv("DEFAULT_ID_THRESHOLD", "0") or 0)
 DEFAULT_RULES_CHAT_ID = int(os.getenv("DEFAULT_RULES_CHAT_ID", "0") or 0)
 DEFAULT_RULES_MESSAGE_ID = int(os.getenv("DEFAULT_RULES_MESSAGE_ID", "0") or 0)
 DEFAULT_RULES_EMOJI = os.getenv("DEFAULT_RULES_EMOJI", "👍")
+
 CAPTCHA_TIMEOUT_SECONDS = 60
 TEMP_BAN_HOURS = 24
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
+
 if not PROTECTED_CHAT_ID:
     raise RuntimeError("PROTECTED_CHAT_ID is not set")
 
@@ -94,6 +91,74 @@ class Settings:
     rules_chat_id: int
     rules_message_id: int
     rules_emoji: str
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    return datetime.fromisoformat(value)
+
+
+def html_user_ref(user_id: int, full_name: str) -> str:
+    return f'<a href="tg://user?id={user_id}">{html.escape(full_name or str(user_id))}</a>'
+
+
+def generate_challenge_id(length: int = 12) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(random.choice(alphabet) for _ in range(length))
+
+
+def build_captcha() -> tuple[str, str, list[str], str]:
+    kind = random.choice(["text", "emoji", "math", "color", "category"])
+
+    if kind == "text":
+        choices = ["человек", "бот", "спам", "реклама"]
+        correct = "человек"
+        prompt = "Нажмите кнопку: человек"
+
+    elif kind == "emoji":
+        choices = ["🐱", "🍓", "🚗", "🌙"]
+        correct = "🐱"
+        prompt = "Нажмите на 🐱"
+
+    elif kind == "math":
+        a = random.randint(1, 5)
+        b = random.randint(1, 5)
+        correct = str(a + b)
+        wrong = list({str(a + b + 1), str(max(0, a + b - 1)), str(a + b + 2)})
+        choices = [correct] + wrong[:3]
+        prompt = f"Сколько будет {a} + {b}?"
+
+    elif kind == "color":
+        choices = ["красный", "зелёный", "синий", "жёлтый"]
+        correct = "синий"
+        prompt = "Нажмите слово: синий"
+
+    else:
+        choices = ["кот", "стол", "лампа", "окно"]
+        correct = "кот"
+        prompt = "Что из этого животное?"
+
+    random.shuffle(choices)
+    return kind, prompt, choices, correct
+
+
+def build_keyboard(chat_id: int, user_id: int, challenge_id: str, choices: list[str]) -> InlineKeyboardMarkup:
+    rows = []
+    for choice in choices:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=choice,
+                    callback_data=f"cap|{chat_id}|{user_id}|{challenge_id}|{choice}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows)
 
 
 class DB:
@@ -165,6 +230,7 @@ class DB:
                 )
                 """
             )
+
         self.bootstrap_defaults(PROTECTED_CHAT_ID)
 
     def bootstrap_defaults(self, chat_id: int):
@@ -175,6 +241,7 @@ class DB:
             "rules_message_id": str(DEFAULT_RULES_MESSAGE_ID),
             "rules_emoji": DEFAULT_RULES_EMOJI,
         }
+
         with closing(self.connect()) as conn, conn:
             for key, value in defaults.items():
                 row = conn.execute(
@@ -184,7 +251,7 @@ class DB:
                 if row is None:
                     conn.execute(
                         "INSERT INTO settings (chat_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
-                        (chat_id, key, value, utcnow(),),
+                        (chat_id, key, value, utcnow()),
                     )
 
     def get_setting(self, chat_id: int, key: str, default: str = "") -> str:
@@ -213,14 +280,23 @@ class DB:
             antispam_enabled=self.get_setting(chat_id, "antispam_enabled", "0") == "1",
             rules_chat_id=int(self.get_setting(chat_id, "rules_chat_id", str(DEFAULT_RULES_CHAT_ID or 0))),
             rules_message_id=int(self.get_setting(chat_id, "rules_message_id", str(DEFAULT_RULES_MESSAGE_ID or 0))),
-            rules_emoji=self.get_setting(chat_id, "rules_emoji", DEFAULT_RULES_EMOJI or "👍"),
+            rules_emoji=self.get_setting(chat_id, "rules_emoji", DEFAULT_RULES_EMOJI),
         )
 
-    def log(self, event_type: str, chat_id: Optional[int] = None, user_id: Optional[int] = None,
-            details: str = "", moderator_id: Optional[int] = None):
+    def log(
+        self,
+        event_type: str,
+        chat_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+        details: str = "",
+        moderator_id: Optional[int] = None,
+    ):
         with closing(self.connect()) as conn, conn:
             conn.execute(
-                "INSERT INTO logs (timestamp, chat_id, user_id, event_type, details, moderator_id) VALUES (?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO logs (timestamp, chat_id, user_id, event_type, details, moderator_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 (utcnow(), chat_id, user_id, event_type, details, moderator_id),
             )
 
@@ -232,6 +308,7 @@ class DB:
             params.append(user_id)
         query += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
+
         with closing(self.connect()) as conn:
             return conn.execute(query, params).fetchall()
 
@@ -244,6 +321,7 @@ class DB:
 
     def upsert_user(self, chat_id: int, user_id: int, **fields):
         current = self.get_user(chat_id, user_id)
+
         base = {
             "join_attempts": 0,
             "last_join_at": None,
@@ -253,15 +331,21 @@ class DB:
             "username": None,
             "updated_at": utcnow(),
         }
+
         if current:
             for key in base:
                 base[key] = current[key]
+
         base.update(fields)
         base["updated_at"] = utcnow()
+
         with closing(self.connect()) as conn, conn:
             conn.execute(
                 """
-                INSERT INTO users (chat_id, user_id, join_attempts, last_join_at, ban_until, verification_stage, full_name, username, updated_at)
+                INSERT INTO users (
+                    chat_id, user_id, join_attempts, last_join_at, ban_until,
+                    verification_stage, full_name, username, updated_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id, user_id)
                 DO UPDATE SET
@@ -274,16 +358,31 @@ class DB:
                     updated_at=excluded.updated_at
                 """,
                 (
-                    chat_id, user_id, base["join_attempts"], base["last_join_at"], base["ban_until"],
-                    base["verification_stage"], base["full_name"], base["username"], base["updated_at"],
+                    chat_id,
+                    user_id,
+                    base["join_attempts"],
+                    base["last_join_at"],
+                    base["ban_until"],
+                    base["verification_stage"],
+                    base["full_name"],
+                    base["username"],
+                    base["updated_at"],
                 ),
             )
 
     def reset_user_attempts(self, chat_id: int, user_id: int):
         self.upsert_user(chat_id, user_id, join_attempts=0, ban_until=None)
 
-    def save_captcha(self, chat_id: int, user_id: int, challenge_id: str, captcha_type: str,
-                     correct_answer: str, expires_at: str, message_id: Optional[int]):
+    def save_captcha(
+        self,
+        chat_id: int,
+        user_id: int,
+        challenge_id: str,
+        captcha_type: str,
+        correct_answer: str,
+        expires_at: str,
+        message_id: Optional[int],
+    ):
         with closing(self.connect()) as conn, conn:
             conn.execute(
                 "UPDATE captcha_sessions SET is_active=0 WHERE chat_id=? AND user_id=?",
@@ -292,16 +391,31 @@ class DB:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO captcha_sessions
-                (chat_id, user_id, challenge_id, captcha_type, correct_answer, created_at, expires_at, is_active, message_id)
+                (
+                    chat_id, user_id, challenge_id, captcha_type, correct_answer,
+                    created_at, expires_at, is_active, message_id
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
-                (chat_id, user_id, challenge_id, captcha_type, correct_answer, utcnow(), expires_at, message_id),
+                (
+                    chat_id,
+                    user_id,
+                    challenge_id,
+                    captcha_type,
+                    correct_answer,
+                    utcnow(),
+                    expires_at,
+                    message_id,
+                ),
             )
 
     def get_captcha(self, chat_id: int, user_id: int):
         with closing(self.connect()) as conn:
             return conn.execute(
-                "SELECT * FROM captcha_sessions WHERE chat_id=? AND user_id=? AND is_active=1",
+                """
+                SELECT * FROM captcha_sessions
+                WHERE chat_id=? AND user_id=? AND is_active=1
+                """,
                 (chat_id, user_id),
             ).fetchone()
 
@@ -313,74 +427,16 @@ class DB:
             )
 
 
-def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def parse_dt(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    return datetime.fromisoformat(value)
-
-
-def html_user_ref(user_id: int, full_name: str) -> str:
-    return f'<a href="tg://user?id={user_id}">{html.escape(full_name or str(user_id))}</a>'
-
-
-def generate_challenge_id(length: int = 12) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(random.choice(alphabet) for _ in range(length))
-
-
-def build_captcha() -> tuple[str, str, list[str], str]:
-    kind = random.choice(["text", "emoji", "math", "color", "category"])
-    if kind == "text":
-        choices = ["человек", "бот", "спам", "реклама"]
-        correct = "человек"
-        prompt = "Нажмите кнопку: человек"
-    elif kind == "emoji":
-        choices = ["🐱", "🍓", "🚗", "🌙"]
-        correct = "🐱"
-        prompt = "Нажмите на 🐱"
-    elif kind == "math":
-        a = random.randint(1, 5)
-        b = random.randint(1, 5)
-        correct = str(a + b)
-        wrong = {str(a + b + 1), str(max(0, a + b - 1)), str(a + b + 2)}
-        choices = [correct, *list(wrong)[:3]]
-        prompt = f"Сколько будет {a} + {b}?"
-    elif kind == "color":
-        choices = ["красный", "зелёный", "синий", "жёлтый"]
-        correct = "синий"
-        prompt = "Нажмите слово: синий"
-    else:
-        choices = ["кот", "стол", "лампа", "окно"]
-        correct = "кот"
-        prompt = "Что из этого животное?"
-
-    random.shuffle(choices)
-    challenge_id = generate_challenge_id()
-    return kind, prompt, choices, correct
-
-
-def build_keyboard(chat_id: int, user_id: int, challenge_id: str, choices: list[str]) -> InlineKeyboardMarkup:
-    rows = []
-    for choice in choices:
-        rows.append([
-            InlineKeyboardButton(
-                text=choice,
-                callback_data=f"cap|{chat_id}|{user_id}|{challenge_id}|{choice}",
-            )
-        ])
-    return InlineKeyboardMarkup(rows)
-
-
 async def is_moderator(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     if OWNER_ID and user_id == OWNER_ID:
         return True
+
     try:
         member = await context.bot.get_chat_member(PROTECTED_CHAT_ID, user_id)
-        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+        return member.status in {
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        }
     except Exception:
         return False
 
@@ -389,6 +445,7 @@ async def admin_guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
     user = update.effective_user
     if not user:
         return False
+
     ok = await is_moderator(context, user.id)
     if not ok and update.effective_message:
         await update.effective_message.reply_text("Доступ только для модераторов и владельца.")
@@ -427,7 +484,12 @@ async def send_rules_instruction(context: ContextTypes.DEFAULT_TYPE, user_id: in
         f"Поставьте эмодзи {settings.rules_emoji} под публикацией с правилами.\n"
         "После этого ограничения будут сняты."
     )
-    await context.bot.send_message(chat_id=user_id, text=text)
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=text)
+    except Exception:
+        return
+
     if settings.rules_chat_id and settings.rules_message_id:
         try:
             await context.bot.forward_message(
@@ -441,9 +503,11 @@ async def send_rules_instruction(context: ContextTypes.DEFAULT_TYPE, user_id: in
 
 async def start_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, full_name: str):
     db: DB = context.application.bot_data["db"]
+
     kind, prompt, choices, correct = build_captcha()
     challenge_id = generate_challenge_id()
     keyboard = build_keyboard(chat_id, user_id, challenge_id, choices)
+
     message = await context.bot.send_message(
         chat_id=chat_id,
         text=(
@@ -455,15 +519,25 @@ async def start_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_i
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=CAPTCHA_TIMEOUT_SECONDS)).isoformat()
-    db.save_captcha(chat_id, user_id, challenge_id, kind, correct, expires_at, message.message_id)
+
+    db.save_captcha(
+        chat_id=chat_id,
+        user_id=user_id,
+        challenge_id=challenge_id,
+        captcha_type=kind,
+        correct_answer=correct,
+        expires_at=expires_at,
+        message_id=message.message_id,
+    )
     db.upsert_user(chat_id, user_id, verification_stage="captcha_pending")
     db.log("captcha_started", chat_id=chat_id, user_id=user_id, details=f"kind={kind}")
 
     job_name = f"captcha_timeout:{chat_id}:{user_id}:{challenge_id}"
-    current_jobs = context.job_queue.get_jobs_by_name(job_name)
-    for job in current_jobs:
+    for job in context.job_queue.get_jobs_by_name(job_name):
         job.schedule_removal()
+
     context.job_queue.run_once(
         captcha_timeout_job,
         when=CAPTCHA_TIMEOUT_SECONDS,
@@ -475,17 +549,22 @@ async def start_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_i
 async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
     db: DB = context.application.bot_data["db"]
     data = context.job.data or {}
+
     chat_id = data.get("chat_id")
     user_id = data.get("user_id")
     challenge_id = data.get("challenge_id")
+
     session = db.get_captcha(chat_id, user_id)
     if not session:
         return
+
     if session["challenge_id"] != challenge_id:
         return
+
     db.deactivate_captcha(chat_id, user_id)
     db.upsert_user(chat_id, user_id, verification_stage="kicked")
     db.log("captcha_timeout", chat_id=chat_id, user_id=user_id, details="timeout")
+
     try:
         await kick_member(context, chat_id, user_id)
         await context.bot.send_message(chat_id=chat_id, text="Вы не прошли проверку!")
@@ -495,11 +574,13 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     db: DB = context.application.bot_data["db"]
+
     await open_member(context, chat_id, user_id)
     db.upsert_user(chat_id, user_id, verification_stage="verified")
     db.deactivate_captcha(chat_id, user_id)
     db.reset_user_attempts(chat_id, user_id)
     db.log("verified", chat_id=chat_id, user_id=user_id, details="emoji_confirmed")
+
     try:
         await context.bot.send_message(chat_id=user_id, text="Проверка завершена. Доступ открыт.")
     except Exception:
@@ -509,18 +590,18 @@ async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db: DB = context.application.bot_data["db"]
     cmu = update.chat_member
+
     if not cmu or cmu.chat.id != PROTECTED_CHAT_ID:
         return
 
     old_status = cmu.old_chat_member.status
     new_status = cmu.new_chat_member.status
-    is_join = old_status in (
-        ChatMemberStatus.LEFT,
-        ChatMemberStatus.KICKED,
-    ) and new_status in (
+
+    is_join = old_status in {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED} and new_status in {
         ChatMemberStatus.MEMBER,
         ChatMemberStatus.RESTRICTED,
-    )
+    }
+
     if not is_join:
         return
 
@@ -545,10 +626,22 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     row = db.get_user(chat_id, user.id)
     join_attempts = int(row["join_attempts"] or 0) + 1
     ban_until = parse_dt(row["ban_until"])
-    db.upsert_user(chat_id, user.id, join_attempts=join_attempts, last_join_at=utcnow(), verification_stage="new_joined")
+
+    db.upsert_user(
+        chat_id,
+        user.id,
+        join_attempts=join_attempts,
+        last_join_at=utcnow(),
+        verification_stage="new_joined",
+    )
 
     if ban_until and ban_until > datetime.now(timezone.utc):
-        db.log("join_blocked_tempban", chat_id=chat_id, user_id=user.id, details=f"until={ban_until.isoformat()}")
+        db.log(
+            "join_blocked_tempban",
+            chat_id=chat_id,
+            user_id=user.id,
+            details=f"until={ban_until.isoformat()}",
+        )
         await temp_ban_member(context, chat_id, user.id, hours=TEMP_BAN_HOURS)
         return
 
@@ -562,6 +655,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.log("temp_ban", chat_id=chat_id, user_id=user.id, details="antispam_13th_attempt")
                 await temp_ban_member(context, chat_id, user.id, hours=TEMP_BAN_HOURS)
                 return
+
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts};antispam=1")
             await kick_member(context, chat_id, user.id)
@@ -588,12 +682,15 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db: DB = context.application.bot_data["db"]
     query = update.callback_query
+
     if not query or not query.data or not query.data.startswith("cap|"):
         return
-    await query.answer()
+
     parts = query.data.split("|", 4)
     if len(parts) != 5:
+        await query.answer()
         return
+
     _, chat_id_str, target_user_id_str, challenge_id, answer = parts
     chat_id = int(chat_id_str)
     target_user_id = int(target_user_id_str)
@@ -616,48 +713,64 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.deactivate_captcha(chat_id, target_user_id)
         db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
         db.log("captcha_timeout_click", chat_id=chat_id, user_id=target_user_id, details="expired_before_click")
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        await query.answer("Капча просрочена.", show_alert=True)
         await kick_member(context, chat_id, target_user_id)
-        await query.edit_message_reply_markup(reply_markup=None)
         return
 
     if answer != session["correct_answer"]:
         db.deactivate_captcha(chat_id, target_user_id)
         db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
         db.log("captcha_failed", chat_id=chat_id, user_id=target_user_id, details=f"answer={answer}")
+
         try:
             await query.edit_message_text("Вы не прошли проверку!")
         except Exception:
             pass
+
+        await query.answer("Неверный ответ.", show_alert=True)
         await kick_member(context, chat_id, target_user_id)
         return
 
     db.deactivate_captcha(chat_id, target_user_id)
     db.upsert_user(chat_id, target_user_id, verification_stage="emoji_pending")
     db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id)
+
     settings = db.get_settings(chat_id)
     text = (
         "Капча пройдена.\n\n"
         f"Теперь поставьте {settings.rules_emoji} под публикацией с правилами. "
         "После этого доступ будет открыт."
     )
+
     try:
         await query.edit_message_text(text)
     except Exception:
         pass
+
+    await query.answer("Капча пройдена.")
     await send_rules_instruction(context, target_user_id, settings)
 
 
 async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db: DB = context.application.bot_data["db"]
     reaction_update = update.message_reaction
+
     if not reaction_update:
         return
 
     settings = db.get_settings(PROTECTED_CHAT_ID)
     if not settings.rules_chat_id or not settings.rules_message_id:
         return
+
     if reaction_update.chat.id != settings.rules_chat_id:
         return
+
     if reaction_update.message_id != settings.rules_message_id:
         return
 
@@ -671,6 +784,7 @@ async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if emoji == settings.rules_emoji:
             has_required = True
             break
+
     if not has_required:
         return
 
@@ -684,6 +798,7 @@ async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     text = (
         "Команды:\n"
         "/status\n"
@@ -709,8 +824,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     db: DB = context.application.bot_data["db"]
     s = db.get_settings(PROTECTED_CHAT_ID)
+
     text = (
         f"protected_chat_id: {PROTECTED_CHAT_ID}\n"
         f"id_threshold: {s.id_threshold}\n"
@@ -726,6 +843,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_idgate_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     db: DB = context.application.bot_data["db"]
     value = db.get_setting(PROTECTED_CHAT_ID, "id_threshold", "0")
     await update.effective_message.reply_text(f"ID threshold: {value}")
@@ -734,49 +852,71 @@ async def cmd_idgate_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_idgate_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /idgate_set 7000000000")
         return
+
     value = int(context.args[0])
     db: DB = context.application.bot_data["db"]
     db.set_setting(PROTECTED_CHAT_ID, "id_threshold", str(value))
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details=f"id_threshold={value}", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details=f"id_threshold={value}",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text(f"Новый ID threshold: {value}")
 
 
 async def cmd_idgate_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /idgate_up 1000000")
         return
+
     step = int(context.args[0])
     db: DB = context.application.bot_data["db"]
     current = int(db.get_setting(PROTECTED_CHAT_ID, "id_threshold", "0"))
     new_value = current + step
     db.set_setting(PROTECTED_CHAT_ID, "id_threshold", str(new_value))
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details=f"id_threshold={new_value}", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details=f"id_threshold={new_value}",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text(f"ID threshold: {new_value}")
 
 
 async def cmd_idgate_down(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /idgate_down 1000000")
         return
+
     step = int(context.args[0])
     db: DB = context.application.bot_data["db"]
     current = int(db.get_setting(PROTECTED_CHAT_ID, "id_threshold", "0"))
     new_value = max(0, current - step)
     db.set_setting(PROTECTED_CHAT_ID, "id_threshold", str(new_value))
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details=f"id_threshold={new_value}", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details=f"id_threshold={new_value}",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text(f"ID threshold: {new_value}")
 
 
 async def cmd_rules_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     db: DB = context.application.bot_data["db"]
     s = db.get_settings(PROTECTED_CHAT_ID)
     await update.effective_message.reply_text(
@@ -789,124 +929,185 @@ async def cmd_rules_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_rules_setchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /rules_setchat -1001916510076")
         return
+
     value = int(context.args[0])
     db: DB = context.application.bot_data["db"]
     db.set_setting(PROTECTED_CHAT_ID, "rules_chat_id", str(value))
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details=f"rules_chat_id={value}", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details=f"rules_chat_id={value}",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text(f"rules_chat_id: {value}")
 
 
 async def cmd_rules_setmsg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /rules_setmsg 2151")
         return
+
     value = int(context.args[0])
     db: DB = context.application.bot_data["db"]
     db.set_setting(PROTECTED_CHAT_ID, "rules_message_id", str(value))
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details=f"rules_message_id={value}", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details=f"rules_message_id={value}",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text(f"rules_message_id: {value}")
 
 
 async def cmd_rules_setemoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /rules_setemoji 👍")
         return
+
     value = context.args[0].strip()
     db: DB = context.application.bot_data["db"]
     db.set_setting(PROTECTED_CHAT_ID, "rules_emoji", value)
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details=f"rules_emoji={value}", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details=f"rules_emoji={value}",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text(f"rules_emoji: {value}")
 
 
 async def cmd_antispam_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     db: DB = context.application.bot_data["db"]
     db.set_setting(PROTECTED_CHAT_ID, "antispam_enabled", "1")
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details="antispam=1", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details="antispam=1",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text("Anti-spam включён.")
 
 
 async def cmd_antispam_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     db: DB = context.application.bot_data["db"]
     db.set_setting(PROTECTED_CHAT_ID, "antispam_enabled", "0")
-    db.log("setting_changed", chat_id=PROTECTED_CHAT_ID, details="antispam=0", moderator_id=update.effective_user.id)
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details="antispam=0",
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text("Anti-spam выключен.")
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     db: DB = context.application.bot_data["db"]
     limit = 20
     if context.args:
         limit = max(1, min(100, int(context.args[0])))
+
     rows = db.get_logs(limit=limit)
     if not rows:
         await update.effective_message.reply_text("Логи пусты.")
         return
+
     lines = []
     for row in rows:
         lines.append(
             f"[{row['timestamp']}] {row['event_type']} | user={row['user_id']} | {row['details'] or ''}"
         )
+
     await update.effective_message.reply_text("\n".join(lines[:50]))
 
 
 async def cmd_logs_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /logs_user 123456789 20")
         return
+
     db: DB = context.application.bot_data["db"]
     target_user_id = int(context.args[0])
     limit = 20
     if len(context.args) > 1:
         limit = max(1, min(100, int(context.args[1])))
+
     rows = db.get_logs(limit=limit, user_id=target_user_id)
     if not rows:
         await update.effective_message.reply_text("По этому user_id логов нет.")
         return
+
     lines = []
     for row in rows:
         lines.append(f"[{row['timestamp']}] {row['event_type']} | {row['details'] or ''}")
+
     await update.effective_message.reply_text("\n".join(lines[:50]))
 
 
 async def cmd_reset_attempts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /reset_attempts 123456789")
         return
+
     target_user_id = int(context.args[0])
     db: DB = context.application.bot_data["db"]
     db.reset_user_attempts(PROTECTED_CHAT_ID, target_user_id)
-    db.log("attempts_reset", chat_id=PROTECTED_CHAT_ID, user_id=target_user_id, moderator_id=update.effective_user.id)
+    db.log(
+        "attempts_reset",
+        chat_id=PROTECTED_CHAT_ID,
+        user_id=target_user_id,
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text("Счётчик попыток сброшен.")
 
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
+
     if not context.args:
         await update.effective_message.reply_text("Пример: /unban 123456789")
         return
+
     target_user_id = int(context.args[0])
-    await context.bot.unban_chat_member(chat_id=PROTECTED_CHAT_ID, user_id=target_user_id, only_if_banned=True)
+    await context.bot.unban_chat_member(
+        chat_id=PROTECTED_CHAT_ID,
+        user_id=target_user_id,
+        only_if_banned=True,
+    )
+
     db: DB = context.application.bot_data["db"]
     db.upsert_user(PROTECTED_CHAT_ID, target_user_id, ban_until=None, verification_stage=None)
-    db.log("manual_unban", chat_id=PROTECTED_CHAT_ID, user_id=target_user_id, moderator_id=update.effective_user.id)
+    db.log(
+        "manual_unban",
+        chat_id=PROTECTED_CHAT_ID,
+        user_id=target_user_id,
+        moderator_id=update.effective_user.id,
+    )
     await update.effective_message.reply_text("Пользователь разбанен.")
 
 
@@ -916,6 +1117,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def build_app() -> Application:
     db = DB(DB_PATH)
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.bot_data["db"] = db
 
@@ -939,6 +1141,7 @@ def build_app() -> Application:
     app.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^cap\|"))
     app.add_handler(MessageReactionHandler(reaction_handler))
+
     app.add_error_handler(error_handler)
     return app
 
@@ -958,89 +1161,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
----
-
-## `requirements.txt`
-
-```text
-python-telegram-bot[job-queue]==22.4
-python-dotenv==1.0.1
-```
-
----
-
-## `.env.example`
-
-```env
-BOT_TOKEN=PASTE_YOUR_BOT_TOKEN_HERE
-PROTECTED_CHAT_ID=-1001916510076
-OWNER_ID=123456789
-DB_PATH=bot.db
-DEFAULT_ID_THRESHOLD=0
-DEFAULT_RULES_CHAT_ID=0
-DEFAULT_RULES_MESSAGE_ID=0
-DEFAULT_RULES_EMOJI= "👍"
-```
-
----
-
-## `.gitignore`
-
-```gitignore
-.env
-bot.db
-__pycache__/
-*.pyc
-*.pyo
-*.log
-```
-
----
-
-## `README.txt`
-
-```text
-1. Создай новый репозиторий на GitHub.
-2. Добавь туда файлы: bot.py, requirements.txt, .env.example, .gitignore.
-3. На Railway создай New Project -> Deploy from GitHub.
-4. В Variables добавь:
-   BOT_TOKEN=...
-   PROTECTED_CHAT_ID=-1001916510076
-   OWNER_ID=...
-5. Добавь бота админом в группу.
-6. Выдай права: Restrict members, Ban users, Delete messages.
-7. Проверь, что у бота включены allowed_updates для chat_member и message_reaction.
-
-Главные команды:
-/start
-/status
-/idgate_status
-/idgate_set 7000000000
-/idgate_up 1000000
-/idgate_down 1000000
-/rules_status
-/rules_setchat -1001916510076
-/rules_setmsg 2151
-/rules_setemoji "👍"
-/antispam_on
-/antispam_off
-/logs 20
-/logs_user 123456789 20
-/reset_attempts 123456789
-/unban 123456789
-
-Логика ID-gate:
-- user_id < threshold -> сразу капча
-- user_id >= threshold -> 1-я и 2-я попытка кик
-- 3-я-12-я попытка -> капча
-- 13-я попытка -> бан на 24 часа
-- если anti-spam включён, user_id >= threshold -> кик на каждой попытке, на 13-й бан на 24 часа
-
-Логика верификации:
-- при входе бот сразу ограничивает права
-- капча действует 60 секунд
-- после капчи пользователь должен поставить нужный эмодзи под публикацией
-- до эмодзи-подтверждения права не открываются
-```
