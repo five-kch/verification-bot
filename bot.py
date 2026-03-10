@@ -1032,7 +1032,7 @@ __pycache__/
 /rules_status
 /rules_setchat -1001916510076
 /rules_setmsg 2151
-/rules_setemoji 👍
+/rules_setemoji "👍"
 /antispam_on
 /antispam_off
 /logs 20
