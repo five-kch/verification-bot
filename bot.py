@@ -1,12 +1,3 @@
-# verification-bot
-
-Ниже полный набор файлов для GitHub/Railway.
-
----
-
-## `bot.py`
-
-```python
 import asyncio
 import html
 import logging
