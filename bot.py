@@ -597,10 +597,10 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     old_status = cmu.old_chat_member.status
     new_status = cmu.new_chat_member.status
 
-    is_join = old_status in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED and new_status in {
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.RESTRICTED,
-    }
+    is_join = old_status in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED} and new_status in {
+    ChatMemberStatus.MEMBER,
+    ChatMemberStatus.RESTRICTED,
+}
 
     if not is_join:
         return
