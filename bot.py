@@ -751,15 +751,20 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.upsert_user(chat_id, target_user_id, verification_stage="emoji_pending")
     db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id)
 
-    settings = db.get_settings(chat_id)
+        settings = db.get_settings(chat_id)
+    mention = html_user_ref(target_user_id, update.effective_user.full_name)
     text = (
-        "Капча пройдена.\n\n"
+        f"{mention}, капча пройдена.\n\n"
         f"Теперь поставьте {settings.rules_emoji} под публикацией с правилами. "
         "После этого доступ будет открыт."
     )
 
     try:
-        await query.edit_message_text(text)
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
     except Exception:
         pass
 
