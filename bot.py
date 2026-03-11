@@ -594,7 +594,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not cmu or cmu.chat.id != PROTECTED_CHAT_ID:
         return
 
-        old_status = cmu.old_chat_member.status
+    old_status = cmu.old_chat_member.status
     new_status = cmu.new_chat_member.status
 
     is_join = (
