@@ -563,19 +563,38 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
     if session["challenge_id"] != challenge_id:
         return
 
+    user_row = db.get_user(chat_id, user_id)
+    full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(user_id)
+
+    try:
+        if session["message_id"]:
+            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+    except Exception:
+        pass
+
     db.deactivate_captcha(chat_id, user_id)
     db.upsert_user(chat_id, user_id, verification_stage="kicked")
     db.log("captcha_timeout", chat_id=chat_id, user_id=user_id, details="timeout")
 
     try:
         await kick_member(context, chat_id, user_id)
-        await context.bot.send_message(chat_id=chat_id, text="Вы не прошли проверку!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{full_name} — Вы не прошли проверку!",
+        )
     except Exception as exc:
         logger.warning("Timeout kick failed: %s", exc)
 
 
 async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     db: DB = context.application.bot_data["db"]
+
+    session = db.get_captcha(chat_id, user_id)
+    try:
+        if session and session["message_id"]:
+            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+    except Exception:
+        pass
 
     await open_member(context, chat_id, user_id)
     db.upsert_user(chat_id, user_id, verification_stage="verified")
@@ -625,9 +644,19 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         logger.warning("Failed to restrict user %s: %s", user.id, exc)
 
-    row = db.get_user(chat_id, user.id)
-    join_attempts = int(row["join_attempts"] or 0) + 1
-    ban_until = parse_dt(row["ban_until"])
+        row = db.get_user(chat_id, user.id)
+
+    if row and row["verification_stage"] in {"captcha_pending", "emoji_pending"}:
+        db.log(
+            "join_skipped_existing_session",
+            chat_id=chat_id,
+            user_id=user.id,
+            details=f"stage={row['verification_stage']}",
+        )
+        return
+
+    join_attempts = int(row["join_attempts"] or 0) + 1 if row else 1
+    ban_until = parse_dt(row["ban_until"]) if row else None
 
     db.upsert_user(
         chat_id,
@@ -725,18 +754,29 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await kick_member(context, chat_id, target_user_id)
         return
 
-    if answer != session["correct_answer"]:
+        if answer != session["correct_answer"]:
+        user_row = db.get_user(chat_id, target_user_id)
+        full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(target_user_id)
+
         db.deactivate_captcha(chat_id, target_user_id)
         db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
         db.log("captcha_failed", chat_id=chat_id, user_id=target_user_id, details=f"answer={answer}")
 
         try:
-            await query.edit_message_text("Вы не прошли проверку!")
+            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
         except Exception:
             pass
 
         await query.answer("Неверный ответ.", show_alert=True)
         await kick_member(context, chat_id, target_user_id)
+
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{full_name} — Вы не прошли проверку!",
+            )
+        except Exception:
+            pass
         return
 
     db.deactivate_captcha(chat_id, target_user_id)
