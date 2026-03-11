@@ -480,15 +480,26 @@ async def temp_ban_member(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user
     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=until_date)
 
 
+
 async def send_rules_instruction(context: ContextTypes.DEFAULT_TYPE, user_id: int, settings: Settings):
+    rules_url = "https://t.me/f1ves_chat/2151?thread=1816"
     text = (
         "Капча пройдена. Остался последний шаг.\n\n"
-        f"Поставьте эмодзи {settings.rules_emoji} под публикацией с правилами.\n"
+        f"Поставьте эмодзи {settings.rules_emoji} под публикацией с правилами: {rules_url}.\n"
         "После этого ограничения будут сняты."
     )
 
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text="Открыть правила", url=rules_url)]]
+    )
+
     try:
-        await context.bot.send_message(chat_id=user_id, text=text)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=text,
+            reply_markup=keyboard,
+            disable_web_page_preview=False,
+        )
     except Exception:
         return
 
@@ -501,7 +512,6 @@ async def send_rules_instruction(context: ContextTypes.DEFAULT_TYPE, user_id: in
             )
         except Exception:
             pass
-
 
 async def start_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, full_name: str):
     db: DB = context.application.bot_data["db"]
@@ -578,13 +588,7 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await kick_member(context, chat_id, user_id)
-        mention = html_user_ref(user_id, full_name)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"{mention} — Вы не прошли проверку!",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+        await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
     except Exception as exc:
         logger.warning("Timeout kick failed: %s", exc)
 
@@ -592,6 +596,7 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     db: DB = context.application.bot_data["db"]
 
+    user_row = db.get_user(chat_id, user_id)
     message_id = None
 
     with closing(db.connect()) as conn:
@@ -697,26 +702,14 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts};antispam=1")
             await kick_member(context, chat_id, user.id)
-            mention = html_user_ref(user.id, user.full_name)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"{mention} — Вы не прошли проверку!",
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
+            await context.bot.send_message(chat_id=chat_id, text=f"{user.full_name} — Вы не прошли проверку!")
             return
 
         if join_attempts in (1, 2):
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts}")
             await kick_member(context, chat_id, user.id)
-            mention = html_user_ref(user.id, user.full_name)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"{mention} — Вы не прошли проверку!",
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
+            await context.bot.send_message(chat_id=chat_id, text=f"{user.full_name} — Вы не прошли проверку!")
             return
 
         if join_attempts >= 13:
@@ -727,6 +720,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await start_captcha(context, chat_id, user.id, user.full_name)
+
 
 
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -822,11 +816,14 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id)
 
     mention = html_user_ref(target_user_id, update.effective_user.full_name)
-    rules_url = "https://t.me/f1ves_chat/1816/2151"
+    rules_url = "https://t.me/f1ves_chat/2151?thread=1816"
     text = (
         f"{mention}, капча пройдена.\n\n"
         f"Теперь поставьте 👍 под публикацией с правилами: {rules_url}.\n"
         "После этого доступ будет открыт."
+    )
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text="Открыть правила", url=rules_url)]]
     )
 
     try:
@@ -834,6 +831,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=False,
+            reply_markup=keyboard,
         )
     except Exception:
         pass
@@ -896,7 +894,6 @@ async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await finalize_verification(context, PROTECTED_CHAT_ID, actor.id)
-
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
