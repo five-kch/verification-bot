@@ -19,9 +19,7 @@ from telegram.ext import (
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
     MessageReactionHandler,
-    filters,
 )
 
 load_dotenv()
@@ -93,6 +91,7 @@ class Settings:
     rules_chat_id: int
     rules_message_id: int
     rules_emoji: str
+    rules_layer_enabled: bool
 
 
 def utcnow() -> str:
@@ -242,6 +241,7 @@ class DB:
             "rules_chat_id": str(DEFAULT_RULES_CHAT_ID),
             "rules_message_id": str(DEFAULT_RULES_MESSAGE_ID),
             "rules_emoji": DEFAULT_RULES_EMOJI,
+            "rules_layer_enabled": "1",
         }
 
         with closing(self.connect()) as conn, conn:
@@ -283,6 +283,7 @@ class DB:
             rules_chat_id=int(self.get_setting(chat_id, "rules_chat_id", str(DEFAULT_RULES_CHAT_ID or 0))),
             rules_message_id=int(self.get_setting(chat_id, "rules_message_id", str(DEFAULT_RULES_MESSAGE_ID or 0))),
             rules_emoji=self.get_setting(chat_id, "rules_emoji", DEFAULT_RULES_EMOJI),
+            rules_layer_enabled=self.get_setting(chat_id, "rules_layer_enabled", "1") == "1",
         )
 
     def log(
@@ -480,26 +481,15 @@ async def temp_ban_member(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user
     await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=until_date)
 
 
-
 async def send_rules_instruction(context: ContextTypes.DEFAULT_TYPE, user_id: int, settings: Settings):
-    rules_url = "https://t.me/f1ves_chat/2151?thread=1816"
     text = (
         "Капча пройдена. Остался последний шаг.\n\n"
-        f"Поставьте эмодзи {settings.rules_emoji} под публикацией с правилами: {rules_url}.\n"
+        f"Поставьте эмодзи {settings.rules_emoji} под публикацией с правилами.\n"
         "После этого ограничения будут сняты."
     )
 
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(text="Открыть правила", url=rules_url)]]
-    )
-
     try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=keyboard,
-            disable_web_page_preview=False,
-        )
+        await context.bot.send_message(chat_id=user_id, text=text)
     except Exception:
         return
 
@@ -512,6 +502,7 @@ async def send_rules_instruction(context: ContextTypes.DEFAULT_TYPE, user_id: in
             )
         except Exception:
             pass
+
 
 async def start_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, full_name: str):
     db: DB = context.application.bot_data["db"]
@@ -573,45 +564,19 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
     if session["challenge_id"] != challenge_id:
         return
 
-    user_row = db.get_user(chat_id, user_id)
-    full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(user_id)
-
-    try:
-        if session["message_id"]:
-            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
-    except Exception:
-        pass
-
     db.deactivate_captcha(chat_id, user_id)
     db.upsert_user(chat_id, user_id, verification_stage="kicked")
     db.log("captcha_timeout", chat_id=chat_id, user_id=user_id, details="timeout")
 
     try:
         await kick_member(context, chat_id, user_id)
-        await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
+        await context.bot.send_message(chat_id=chat_id, text="Вы не прошли проверку!")
     except Exception as exc:
         logger.warning("Timeout kick failed: %s", exc)
 
 
 async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     db: DB = context.application.bot_data["db"]
-
-    user_row = db.get_user(chat_id, user_id)
-    message_id = None
-
-    with closing(db.connect()) as conn:
-        row = conn.execute(
-            "SELECT message_id FROM captcha_sessions WHERE chat_id=? AND user_id=? ORDER BY created_at DESC LIMIT 1",
-            (chat_id, user_id),
-        ).fetchone()
-        if row:
-            message_id = row["message_id"]
-
-    try:
-        if message_id:
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception:
-        pass
 
     await open_member(context, chat_id, user_id)
     db.upsert_user(chat_id, user_id, verification_stage="verified")
@@ -648,35 +613,30 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = db.get_settings(chat_id)
 
     db.log("join", chat_id=chat_id, user_id=user.id, details=f"username={user.username or '-'}")
-
-    row = db.get_user(chat_id, user.id)
-
-    if row and row["verification_stage"] in {"captcha_pending", "emoji_pending"}:
-        db.log(
-            "join_skipped_existing_session",
-            chat_id=chat_id,
-            user_id=user.id,
-            details=f"stage={row['verification_stage']}",
-        )
-        return
-
-    join_attempts = int(row["join_attempts"] or 0) + 1 if row else 1
-    ban_until = parse_dt(row["ban_until"]) if row else None
-
     db.upsert_user(
         chat_id,
         user.id,
         full_name=user.full_name,
         username=user.username,
-        join_attempts=join_attempts,
         last_join_at=utcnow(),
-        verification_stage="new_joined",
     )
 
     try:
         await restrict_new_member(context, chat_id, user.id)
     except Exception as exc:
         logger.warning("Failed to restrict user %s: %s", user.id, exc)
+
+    row = db.get_user(chat_id, user.id)
+    join_attempts = int(row["join_attempts"] or 0) + 1
+    ban_until = parse_dt(row["ban_until"])
+
+    db.upsert_user(
+        chat_id,
+        user.id,
+        join_attempts=join_attempts,
+        last_join_at=utcnow(),
+        verification_stage="new_joined",
+    )
 
     if ban_until and ban_until > datetime.now(timezone.utc):
         db.log(
@@ -702,14 +662,14 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts};antispam=1")
             await kick_member(context, chat_id, user.id)
-            await context.bot.send_message(chat_id=chat_id, text=f"{user.full_name} — Вы не прошли проверку!")
+            await context.bot.send_message(chat_id=chat_id, text="Вы не прошли проверку!")
             return
 
         if join_attempts in (1, 2):
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts}")
             await kick_member(context, chat_id, user.id)
-            await context.bot.send_message(chat_id=chat_id, text=f"{user.full_name} — Вы не прошли проверку!")
+            await context.bot.send_message(chat_id=chat_id, text="Вы не прошли проверку!")
             return
 
         if join_attempts >= 13:
@@ -720,7 +680,6 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await start_captcha(context, chat_id, user.id, user.full_name)
-
 
 
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -811,6 +770,14 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
+    settings = db.get_settings(chat_id)
+
+    if not settings.rules_layer_enabled:
+        db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id, details="rules_layer_off")
+        await query.answer("Капча пройдена.")
+        await finalize_verification(context, chat_id, target_user_id)
+        return
+
     db.deactivate_captcha(chat_id, target_user_id)
     db.upsert_user(chat_id, target_user_id, verification_stage="emoji_pending")
     db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id)
@@ -819,11 +786,8 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rules_url = "https://t.me/f1ves_chat/2151?thread=1816"
     text = (
         f"{mention}, капча пройдена.\n\n"
-        f"Теперь поставьте 👍 под публикацией с правилами: {rules_url}.\n"
+        f"Теперь поставьте {settings.rules_emoji} под публикацией с правилами: {rules_url}.\n"
         "После этого доступ будет открыт."
-    )
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(text="Открыть правила", url=rules_url)]]
     )
 
     try:
@@ -831,13 +795,12 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=False,
-            reply_markup=keyboard,
         )
     except Exception:
         pass
 
     await query.answer("Капча пройдена.")
-    await send_rules_instruction(context, target_user_id, db.get_settings(chat_id))
+    await send_rules_instruction(context, target_user_id, settings)
 
 
 async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -848,6 +811,9 @@ async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     settings = db.get_settings(PROTECTED_CHAT_ID)
+    if not settings.rules_layer_enabled:
+        return
+
     if not settings.rules_chat_id or not settings.rules_message_id:
         return
 
@@ -895,6 +861,7 @@ async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await finalize_verification(context, PROTECTED_CHAT_ID, actor.id)
 
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_guard(update, context):
         return
@@ -911,6 +878,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/rules_setchat <chat_id>\n"
         "/rules_setmsg <message_id>\n"
         "/rules_setemoji <эмодзи>\n"
+        "/rules_layer_status\n"
+        "/rules_layer_on\n"
+        "/rules_layer_off\n"
         "/antispam_on\n"
         "/antispam_off\n"
         "/logs [число]\n"
@@ -1022,7 +992,8 @@ async def cmd_rules_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         f"rules_chat_id: {s.rules_chat_id}\n"
         f"rules_message_id: {s.rules_message_id}\n"
-        f"rules_emoji: {s.rules_emoji}"
+        f"rules_emoji: {s.rules_emoji}\n"
+        f"rules_layer_enabled: {'on' if s.rules_layer_enabled else 'off'}"
     )
 
 
@@ -1084,6 +1055,46 @@ async def cmd_rules_setemoji(update: Update, context: ContextTypes.DEFAULT_TYPE)
         moderator_id=update.effective_user.id,
     )
     await update.effective_message.reply_text(f"rules_emoji: {value}")
+
+
+async def cmd_rules_layer_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_guard(update, context):
+        return
+
+    db: DB = context.application.bot_data["db"]
+    s = db.get_settings(PROTECTED_CHAT_ID)
+    state = "включён" if s.rules_layer_enabled else "выключен"
+    await update.effective_message.reply_text(f"Третий слой: {state}")
+
+
+async def cmd_rules_layer_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_guard(update, context):
+        return
+
+    db: DB = context.application.bot_data["db"]
+    db.set_setting(PROTECTED_CHAT_ID, "rules_layer_enabled", "1")
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details="rules_layer_enabled=1",
+        moderator_id=update.effective_user.id,
+    )
+    await update.effective_message.reply_text("Третий слой включён.")
+
+
+async def cmd_rules_layer_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_guard(update, context):
+        return
+
+    db: DB = context.application.bot_data["db"]
+    db.set_setting(PROTECTED_CHAT_ID, "rules_layer_enabled", "0")
+    db.log(
+        "setting_changed",
+        chat_id=PROTECTED_CHAT_ID,
+        details="rules_layer_enabled=0",
+        moderator_id=update.effective_user.id,
+    )
+    await update.effective_message.reply_text("Третий слой выключен.")
 
 
 async def cmd_antispam_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1215,42 +1226,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled exception", exc_info=context.error)
 
 
-async def handle_new_members_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.new_chat_members:
-        return
-
-    if update.effective_chat.id != PROTECTED_CHAT_ID:
-        return
-
-    db: DB = context.application.bot_data["db"]
-
-    for user in update.message.new_chat_members:
-        db.log(
-            "join_message_fallback",
-            chat_id=update.effective_chat.id,
-            user_id=user.id,
-            details=f"username={user.username or '-'}",
-        )
-
-        class _Member:
-            def __init__(self, status: str, user_obj):
-                self.status = status
-                self.user = user_obj
-
-        class _CMU:
-            def __init__(self, chat, user_obj):
-                self.chat = chat
-                self.old_chat_member = _Member(ChatMemberStatus.LEFT, user_obj)
-                self.new_chat_member = _Member(ChatMemberStatus.MEMBER, user_obj)
-
-        fake_update = Update(
-            update.update_id,
-            chat_member=_CMU(update.effective_chat, user),
-        )
-
-        await handle_new_member(fake_update, context)
-
-
 def build_app() -> Application:
     db = DB(DB_PATH)
 
@@ -1267,6 +1242,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("rules_setchat", cmd_rules_setchat))
     app.add_handler(CommandHandler("rules_setmsg", cmd_rules_setmsg))
     app.add_handler(CommandHandler("rules_setemoji", cmd_rules_setemoji))
+    app.add_handler(CommandHandler("rules_layer_status", cmd_rules_layer_status))
+    app.add_handler(CommandHandler("rules_layer_on", cmd_rules_layer_on))
+    app.add_handler(CommandHandler("rules_layer_off", cmd_rules_layer_off))
     app.add_handler(CommandHandler("antispam_on", cmd_antispam_on))
     app.add_handler(CommandHandler("antispam_off", cmd_antispam_off))
     app.add_handler(CommandHandler("logs", cmd_logs))
@@ -1275,9 +1253,6 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("unban", cmd_unban))
 
     app.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(
-        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members_message)
-    )
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^cap\|"))
     app.add_handler(MessageReactionHandler(reaction_handler))
 
