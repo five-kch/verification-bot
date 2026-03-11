@@ -568,7 +568,10 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if session["message_id"]:
-            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+            await context.bot.delete_message(
+                chat_id=chat_id,
+                message_id=session["message_id"]
+            )
     except Exception:
         pass
 
@@ -762,7 +765,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
            db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
            db.log("captcha_failed", chat_id=chat_id, user_id=target_user_id, details=f"answer={answer}")
 
-           try:
+          try:
               await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
           except Exception:
               pass
@@ -1241,5 +1244,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
