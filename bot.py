@@ -1232,8 +1232,8 @@ def build_app() -> Application:
 
     app.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(
-    MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members_message)
-)
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members_message)
+    )
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^cap\|"))
     app.add_handler(MessageReactionHandler(reaction_handler))
 
