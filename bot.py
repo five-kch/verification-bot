@@ -19,7 +19,9 @@ from telegram.ext import (
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
     MessageReactionHandler,
+    filters,
 )
 
 load_dotenv()
@@ -1115,6 +1117,42 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled exception", exc_info=context.error)
 
 
+async def handle_new_members_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.new_chat_members:
+        return
+
+    if update.effective_chat.id != PROTECTED_CHAT_ID:
+        return
+
+    db: DB = context.application.bot_data["db"]
+
+    for user in update.message.new_chat_members:
+        db.log(
+            "join_message_fallback",
+            chat_id=update.effective_chat.id,
+            user_id=user.id,
+            details=f"username={user.username or '-'}",
+        )
+
+        class _Member:
+            def __init__(self, status: str, user_obj):
+                self.status = status
+                self.user = user_obj
+
+        class _CMU:
+            def __init__(self, chat, user_obj):
+                self.chat = chat
+                self.old_chat_member = _Member(ChatMemberStatus.LEFT, user_obj)
+                self.new_chat_member = _Member(ChatMemberStatus.MEMBER, user_obj)
+
+        fake_update = Update(
+            update.update_id,
+            chat_member=_CMU(update.effective_chat, user),
+        )
+
+        await handle_new_member(fake_update, context)
+
+
 def build_app() -> Application:
     db = DB(DB_PATH)
 
@@ -1139,6 +1177,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("unban", cmd_unban))
 
     app.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(
+    MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members_message)
+)
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^cap\|"))
     app.add_handler(MessageReactionHandler(reaction_handler))
 
