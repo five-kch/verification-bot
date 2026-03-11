@@ -578,7 +578,13 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await kick_member(context, chat_id, user_id)
-        await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
+        mention = html_user_ref(user_id, full_name)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{mention} — Вы не прошли проверку!",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
     except Exception as exc:
         logger.warning("Timeout kick failed: %s", exc)
 
@@ -586,7 +592,6 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     db: DB = context.application.bot_data["db"]
 
-    user_row = db.get_user(chat_id, user_id)
     message_id = None
 
     with closing(db.connect()) as conn:
@@ -692,14 +697,26 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts};antispam=1")
             await kick_member(context, chat_id, user.id)
-            await context.bot.send_message(chat_id=chat_id, text=f"{user.full_name} — Вы не прошли проверку!")
+            mention = html_user_ref(user.id, user.full_name)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{mention} — Вы не прошли проверку!",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
             return
 
         if join_attempts in (1, 2):
             db.upsert_user(chat_id, user.id, verification_stage="kicked")
             db.log("idgate_kick", chat_id=chat_id, user_id=user.id, details=f"attempt={join_attempts}")
             await kick_member(context, chat_id, user.id)
-            await context.bot.send_message(chat_id=chat_id, text=f"{user.full_name} — Вы не прошли проверку!")
+            mention = html_user_ref(user.id, user.full_name)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{mention} — Вы не прошли проверку!",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
             return
 
         if join_attempts >= 13:
@@ -760,7 +777,13 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await kick_member(context, chat_id, target_user_id)
 
         try:
-            await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
+            mention = html_user_ref(target_user_id, full_name)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{mention} — Вы не прошли проверку!",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
         except Exception:
             pass
         return
