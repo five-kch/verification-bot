@@ -767,7 +767,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
               await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
-                except Exception:
+                    except Exception:
               pass
 
           await query.answer("Неверный ответ.", show_alert=True)
@@ -1246,4 +1246,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
