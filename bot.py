@@ -586,10 +586,20 @@ async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 async def finalize_verification(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     db: DB = context.application.bot_data["db"]
 
-    session = db.get_captcha(chat_id, user_id)
+    user_row = db.get_user(chat_id, user_id)
+    message_id = None
+
+    with closing(db.connect()) as conn:
+        row = conn.execute(
+            "SELECT message_id FROM captcha_sessions WHERE chat_id=? AND user_id=? ORDER BY created_at DESC LIMIT 1",
+            (chat_id, user_id),
+        ).fetchone()
+        if row:
+            message_id = row["message_id"]
+
     try:
-        if session and session["message_id"]:
-            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+        if message_id:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception:
         pass
 
