@@ -821,11 +821,11 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.upsert_user(chat_id, target_user_id, verification_stage="emoji_pending")
     db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id)
 
-    settings = db.get_settings(chat_id)
     mention = html_user_ref(target_user_id, update.effective_user.full_name)
+    rules_url = "https://t.me/f1ves_chat/1816/2151"
     text = (
         f"{mention}, капча пройдена.\n\n"
-        f"Теперь поставьте {settings.rules_emoji} под публикацией с правилами. "
+        f"Теперь поставьте 👍 под публикацией с правилами: {rules_url}.\n"
         "После этого доступ будет открыт."
     )
 
@@ -833,13 +833,13 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             text,
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+            disable_web_page_preview=False,
         )
     except Exception:
         pass
 
     await query.answer("Капча пройдена.")
-    await send_rules_instruction(context, target_user_id, settings)
+    await send_rules_instruction(context, target_user_id, db.get_settings(chat_id))
 
 
 async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -856,26 +856,44 @@ async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if reaction_update.chat.id != settings.rules_chat_id:
         return
 
-    if reaction_update.message_id != settings.rules_message_id:
+    reacted_message_id = getattr(reaction_update, "message_id", None)
+    if reacted_message_id != settings.rules_message_id:
         return
 
     actor = reaction_update.user
     if not actor:
         return
 
-    has_required = False
+    new_has_required = False
     for item in reaction_update.new_reaction:
         emoji = getattr(item, "emoji", None)
         if emoji == settings.rules_emoji:
-            has_required = True
+            new_has_required = True
             break
 
-    if not has_required:
+    if not new_has_required:
+        return
+
+    old_had_required = False
+    for item in reaction_update.old_reaction:
+        emoji = getattr(item, "emoji", None)
+        if emoji == settings.rules_emoji:
+            old_had_required = True
+            break
+
+    if old_had_required:
         return
 
     row = db.get_user(PROTECTED_CHAT_ID, actor.id)
     if not row or row["verification_stage"] != "emoji_pending":
         return
+
+    db.log(
+        "rules_emoji_confirmed",
+        chat_id=PROTECTED_CHAT_ID,
+        user_id=actor.id,
+        details=f"message_id={reacted_message_id};emoji={settings.rules_emoji}",
+    )
 
     await finalize_verification(context, PROTECTED_CHAT_ID, actor.id)
 
