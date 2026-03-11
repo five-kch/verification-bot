@@ -755,29 +755,29 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
         if answer != session["correct_answer"]:
-        user_row = db.get_user(chat_id, target_user_id)
-        full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(target_user_id)
+           user_row = db.get_user(chat_id, target_user_id)
+           full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(target_user_id)
 
-        db.deactivate_captcha(chat_id, target_user_id)
-        db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
-        db.log("captcha_failed", chat_id=chat_id, user_id=target_user_id, details=f"answer={answer}")
+           db.deactivate_captcha(chat_id, target_user_id)
+           db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
+           db.log("captcha_failed", chat_id=chat_id, user_id=target_user_id, details=f"answer={answer}")
 
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
-        except Exception:
-            pass
+          try:
+              await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+          except Exception:
+              pass
 
-        await query.answer("Неверный ответ.", show_alert=True)
-        await kick_member(context, chat_id, target_user_id)
+          await query.answer("Неверный ответ.", show_alert=True)
+          await kick_member(context, chat_id, target_user_id)
 
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"{full_name} — Вы не прошли проверку!",
-            )
-        except Exception:
-            pass
-        return
+          try:
+              await context.bot.send_message(
+                  chat_id=chat_id,
+                  text=f"{full_name} — Вы не прошли проверку!",
+              )
+          except Exception:
+              pass
+          return
 
     db.deactivate_captcha(chat_id, target_user_id)
     db.upsert_user(chat_id, target_user_id, verification_stage="emoji_pending")
