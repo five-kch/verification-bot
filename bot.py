@@ -783,7 +783,13 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await kick_member(context, chat_id, target_user_id)
 
         try:
-            await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
+            mention = html_user_ref(user_id, full_name)
+
+await context.bot.send_message(
+    chat_id=chat_id,
+    text=f"{mention} — Вы не прошли проверку!",
+    parse_mode=ParseMode.HTML
+)
         except Exception:
             pass
         return
