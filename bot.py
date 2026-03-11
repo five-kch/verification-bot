@@ -733,25 +733,56 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     expires_at = parse_dt(session["expires_at"])
     if not expires_at or expires_at <= datetime.now(timezone.utc):
+        user_row = db.get_user(chat_id, target_user_id)
+        full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(target_user_id)
+
+        try:
+            if session["message_id"]:
+                await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+        except Exception:
+            pass
+
         db.deactivate_captcha(chat_id, target_user_id)
         db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
         db.log("captcha_timeout_click", chat_id=chat_id, user_id=target_user_id, details="expired_before_click")
 
+        await query.answer("Капча просрочена.", show_alert=True)
+        await kick_member(context, chat_id, target_user_id)
+
         try:
-            await query.edit_message_reply_markup(reply_markup=None)
+            await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
+        except Exception:
+            pass
+        return
+
+    if answer != session["correct_answer"]:
+        user_row = db.get_user(chat_id, target_user_id)
+        full_name = user_row["full_name"] if user_row and user_row["full_name"] else str(target_user_id)
+
+        db.deactivate_captcha(chat_id, target_user_id)
+        db.upsert_user(chat_id, target_user_id, verification_stage="kicked")
+        db.log("captcha_failed", chat_id=chat_id, user_id=target_user_id, details=f"answer={answer}")
+
+        try:
+            if session["message_id"]:
+                await context.bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
         except Exception:
             pass
 
-        await query.answer("Капча просрочена.", show_alert=True)
+        await query.answer("Неверный ответ.", show_alert=True)
         await kick_member(context, chat_id, target_user_id)
+
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=f"{full_name} — Вы не прошли проверку!")
+        except Exception:
+            pass
         return
 
-        
     db.deactivate_captcha(chat_id, target_user_id)
     db.upsert_user(chat_id, target_user_id, verification_stage="emoji_pending")
     db.log("captcha_passed", chat_id=chat_id, user_id=target_user_id)
 
-        settings = db.get_settings(chat_id)
+    settings = db.get_settings(chat_id)
     mention = html_user_ref(target_user_id, update.effective_user.full_name)
     text = (
         f"{mention}, капча пройдена.\n\n"
